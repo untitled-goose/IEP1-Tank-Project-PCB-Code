@@ -1,0 +1,252 @@
+//code for tank reciever v5
+
+#include <esp_now.h>
+#include <WiFi.h>
+#include <AccelStepper.h>
+#include <ESP32Servo.h>
+
+//Motor variables
+#define STEP1 18
+#define DIR1  19
+
+#define STEP2 16
+#define DIR2  17
+
+#define STEP3 26   
+#define DIR3  25 
+
+#define STEP4 14
+#define DIR4  27
+
+#define AIN1  22
+#define AIN2  23
+
+#define BIN1  32
+#define BIN2  33
+
+//Turret variables
+#define Servo180A  4
+#define Servo180B 21
+
+int mySpeed, ml1, ml2, mr1, mr2;
+
+//Motor control
+AccelStepper motorL1(1, STEP1, DIR1);
+AccelStepper motorL2(1, STEP2, DIR2);
+AccelStepper motorR1(1, STEP3, DIR3);
+AccelStepper motorR2(1, STEP4, DIR4);
+
+
+//Turret control
+Servo TurretServo; // 180 servo on pot2
+Servo DartFeederServo; // 180 servo on button 1
+
+typedef struct __attribute__((packed)) struct_message {
+    byte jLeftX;
+    byte jLeftY;
+    byte jLeftButton;
+    byte jRightX;
+    byte jRightY;
+    byte jRightButton;
+    byte pot1;
+    byte pot2;
+    byte togSwitchL;
+    byte togSwitchR;
+    byte button1;
+    byte button2;
+    byte button3;
+    byte button4;
+    
+} struct_message;
+
+struct_message incomingData;
+
+void OnDataRecv(const uint8_t * mac, const uint8_t *incomingDataPtr, int len) {
+  memcpy(&incomingData, incomingDataPtr, sizeof(incomingData));
+}
+
+void setup() {
+  
+  Serial.begin(115200);
+
+  // Setup Flywheels
+  pinMode(AIN1, OUTPUT);
+  pinMode(AIN2, OUTPUT);
+  pinMode(BIN1, OUTPUT);
+  pinMode(BIN2, OUTPUT);
+  
+  digitalWrite(AIN1, LOW);
+  digitalWrite(AIN2, LOW);
+  digitalWrite(BIN1, LOW);
+  digitalWrite(BIN2, LOW);
+
+  WiFi.mode(WIFI_STA);
+  if (esp_now_init() != ESP_OK) return;
+  esp_now_register_recv_cb(esp_now_recv_cb_t(OnDataRecv));
+
+  //Left NEMAs
+  motorL1.setMaxSpeed(2000.0);
+  motorL1.setMinPulseWidth(20); 
+  motorL2.setMaxSpeed(2000.0);
+  motorL2.setMinPulseWidth(20);
+  //Right NEMAs
+  motorR1.setMaxSpeed(2000.0);
+  motorR1.setMinPulseWidth(20);
+  motorR2.setMaxSpeed(2000.0);
+  motorR2.setMinPulseWidth(20);
+
+  // Setup Servos
+  TurretServo.attach(Servo180A);
+  DartFeederServo.attach(Servo180B);
+  
+  DartFeederServo.write(90); // Start with dart feeder pulled back
+}
+
+//MOTOR FUNCTIONS (6 Moves)
+void RunMotors() {
+    motorL1.runSpeed();
+    motorL2.runSpeed();
+    motorR1.runSpeed();
+    motorR2.runSpeed();
+}
+
+void Stop() {               
+  motorL1.setSpeed(0);
+  motorL2.setSpeed(0);
+  motorR1.setSpeed(0);
+  motorR2.setSpeed(0);
+}
+
+void GoForward() {
+  motorL1.setSpeed(ml1);
+  motorL2.setSpeed(ml2);
+  motorR1.setSpeed(mr1);
+  motorR2.setSpeed(mr2);
+}
+
+void GoBackward() {
+  motorL1.setSpeed(-ml1);
+  motorL2.setSpeed(-ml2);
+  motorR1.setSpeed(-mr1);
+  motorR2.setSpeed(-mr2);
+}
+
+void GoRight() {
+  motorL1.setSpeed(ml1);
+  motorL2.setSpeed(ml2);
+  motorR1.setSpeed(-mr1);
+  motorR2.setSpeed(-mr2);  
+}
+
+void GoLeft() {
+  motorL1.setSpeed(-ml1);
+  motorL2.setSpeed(-ml2);
+  motorR1.setSpeed(mr1);
+  motorR2.setSpeed(mr2);
+}
+
+void SlideRight() {
+  motorL1.setSpeed(-ml1);
+  motorL2.setSpeed(ml2);
+  motorR1.setSpeed(mr1);
+  motorR2.setSpeed(-mr2);
+}
+
+void SlideLeft() {
+  motorL1.setSpeed(ml1);
+  motorL2.setSpeed(-ml2);
+  motorR1.setSpeed(-mr1);
+  motorR2.setSpeed(mr2);
+}
+
+void loop() {
+  mySpeed = map(incomingData.pot1, 0, 255, 0, 2000);
+
+  ml1 = -mySpeed;
+  ml2 = -mySpeed;
+  mr1 =  mySpeed;
+  mr2 =  mySpeed;
+
+  // Pick one move, otherwise stop
+  if (incomingData.jRightX > 147 && incomingData.jLeftX > 147) {
+    GoBackward();
+  } else if (incomingData.jRightX < 100 && incomingData.jLeftX < 100) {
+    GoForward();
+  } else if (incomingData.jRightY < 100) {
+    GoRight();
+  } else if (incomingData.jRightY > 147) {
+    GoLeft();
+  } else if (incomingData.jLeftY > 147) {
+    SlideLeft();
+  } else if (incomingData.jLeftY < 100) {
+    SlideRight();
+  } else {
+    Stop();
+  }
+
+  RunMotors();
+
+  // Flywheels: only update when the toggle changes
+  static byte lastToggle = 2;
+  if (incomingData.togSwitchL != lastToggle) {
+    lastToggle = incomingData.togSwitchL;
+    if (lastToggle == 0) {
+      digitalWrite(AIN1, HIGH);
+      digitalWrite(AIN2, LOW);
+      digitalWrite(BIN1, HIGH);
+      digitalWrite(BIN2, LOW);
+    } else {
+      digitalWrite(AIN1, LOW);
+      digitalWrite(AIN2, LOW);
+      digitalWrite(BIN1, LOW);
+      digitalWrite(BIN2, LOW);
+    }
+  }
+
+  // Dart feeder: only update when the button changes
+  static byte lastButton = 2;
+  if (incomingData.button1 != lastButton) {
+    lastButton = incomingData.button1;
+    DartFeederServo.write(lastButton == 0 ? 0 : 90);
+  }
+
+  // Turret servo: only update when the pot2 angle changes
+  static int lastAngle = -1;
+  int angle = map(incomingData.pot2, 0, 255, 0, 180);
+  if (angle != lastAngle) {
+    lastAngle = angle;
+    TurretServo.write(angle);
+  }
+
+
+Serial.print(incomingData.jLeftX);
+Serial.print("  ");
+Serial.print(incomingData.jLeftY);
+Serial.print("  ");
+Serial.print(incomingData.jRightX);
+Serial.print("  ");
+Serial.print(incomingData.jRightY);
+Serial.print("  ");
+Serial.print(incomingData.pot1);
+Serial.print("  ");
+Serial.print(incomingData.pot2);
+Serial.print("  ");
+
+Serial.print(incomingData.jLeftButton);
+Serial.print("  ");
+Serial.print(incomingData.jRightButton);
+Serial.print("  ");
+Serial.print(incomingData.button1);
+Serial.print("  ");
+Serial.print(incomingData.button2);
+Serial.print("  ");
+Serial.print(incomingData.button3);
+Serial.print("  ");
+Serial.print(incomingData.button4);
+Serial.print("  ");
+
+Serial.print(incomingData.togSwitchL);
+Serial.print("  ");
+Serial.println(incomingData.togSwitchR); 
+
+}
